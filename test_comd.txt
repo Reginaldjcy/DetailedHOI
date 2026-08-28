@@ -1,0 +1,38 @@
+#  Basic hicodet
+DETR=base python main.py --pretrained checkpoints/detr-r50-hicodet.pth \
+                         --output-dir outputs/pvic-detr-r50-hicodet
+
+python main_d.py --pretrained checkpoints/detr-r50-hicodet.pth --output-dir outputs/main1-detr-r50-hicodet 
+
+
+#  Basic vcoco
+DETR=base \
+WANDB_PROJECT="detailhoi" \
+WANDB_ENTITY="cj-monash-university" \
+python main.py \
+    --dataset vcoco \
+    --data-root vcoco/ \
+    --partitions trainval test \
+    --pretrained checkpoints/detr-r50-vcoco.pth \
+    --output-dir outputs/pvic-detr-r50-vcoco \
+    --use-wandb
+    
+DETR=base python main.py --dataset vcoco --data-root vcoco/ --partitions trainval test \
+                         --pretrained checkpoints/detr-r50-vcoco.pth \
+                         --output-dir outputs/pvic-detr-r50-vcoco
+
+python main_d.py --dataset vcoco --data-root vcoco/ --partitions trainval test \
+                         --pretrained checkpoints/detr-r50-vcoco.pth \
+                         --output-dir outputs/pvic-detr-r50-vcoco --use-wandb
+
+WANDB_PROJECT="detailhoi" WANDB_ENTITY="cj-monash-university" \
+python main_d.py --dataset vcoco --data-root vcoco/ \
+                 --partitions trainval test \
+                 --pretrained checkpoints/detr-r50-vcoco.pth \
+                 --output-dir outputs/pvic-detr-r50-vcoco \
+                 --use-wandb
+
+python filter_dataset_vcoco.py --data-root ./vcoco --partition train2014 --batch-size 256
+python filter_dataset_vcoco.py --data-root ./vcoco --partition val2014 --batch-size 256
+python filter_dataset_hico.py --data-root ./hicodet --partition train2015 --batch-size 256
+python filter_dataset_hico.py --data-root ./hicodet --partition test2015 --batch-size 256

@@ -1,0 +1,51 @@
+project: DetailHOI-VCOCO-A6000-Dual
+program: main_d.py
+method: bayes
+metric:
+  name: val/mAP
+  goal: maximize
+
+# 启用早停：防止差参数浪费昂贵的双卡算力
+early_terminate:
+  type: hyperband
+  min_iter: 5
+  eta: 2
+
+parameters:
+  # 1. 学习率：双卡模式下等效 Batch Size 较大，学习率可以稍微大胆一点
+  lr-head:
+    distribution: log_uniform_values
+    min: 5e-5
+    max: 1e-3
+    
+  # 2. Batch Size：
+  # 之前 32 时卡 0 占 39GB，由于验证阶段显存开销巨大，建议不要设得太死
+  # 推荐在 [32, 48, 64] 之间探索，64 可能是这两张卡 DDP 的物理极限
+  batch-size:
+    values: [32, 48, 64]
+    
+  # 3. 权重衰减
+  weight-decay:
+    values: [1e-4, 1e-5]
+
+command:
+  - python
+  - ${program}
+  - "--dataset"
+  - "vcoco"
+  - "--data-root"
+  - "vcoco/"
+  - "--partitions"
+  - "trainval"
+  - "test"
+  - "--pretrained"
+  - "checkpoints/detr-r50-vcoco.pth"
+  - "--output-dir"
+  - "outputs/pvic-vcoco-dual-a6000"
+  # 🚀 提升效率：A6000 吞吐量大，需要更多 worker 喂数据
+  - "--num-workers"
+  - "8"
+  - "--use-wandb"
+  - "--world-size"
+  - "2"
+  - ${args}

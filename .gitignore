@@ -1,0 +1,35 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.hypothesis/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# ---- Editor / OS ----
+.vscode/
+.idea/
+.DS_Store
+
+# ---- Training artifacts (too large for GitHub) ----
+outputs/
+checkpoints/
+wandb/
+runs/
+*.log
+
+# ---- Model weights ----
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+
+# ---- Datasets: images & raw archives (download separately) ----
+hicodet/hico_20160224_det/
+hicodet/filtered_images/
+vcoco/mscoco2014/
+*.tar
+*.tar.gz
+*.zip

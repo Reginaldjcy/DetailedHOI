@@ -1,0 +1,589 @@
+"""
+CJ
+ho_q:                            
+q_pos: skeleton (6) / object - n1:n2 - n1+n2=512
+"""
+
+from __future__ import annotations
+import os
+import torch
+import torch.nn.functional as F
+import torch.distributed as dist
+
+from torch import nn, Tensor
+from collections import OrderedDict
+from typing import Optional, Tuple, List
+from torchvision.ops import FeaturePyramidNetwork
+
+from transformers import (
+    TransformerEncoder,
+    TransformerDecoder,
+    TransformerDecoderLayer,
+    SwinTransformer,
+)
+
+from ops import (
+    binary_focal_loss_with_logits,
+    compute_spatial_encodings,
+    prepare_region_proposals,
+    associate_with_ground_truth,
+    compute_prior_scores,
+    compute_sinusoidal_pe
+)
+
+from detr.models import build_model as build_base_detr
+from detr.models.position_encoding import PositionEmbeddingSine
+from detr.util.misc import NestedTensor, nested_tensor_from_tensor_list
+
+from build_model_pose import BodyPoseEstimator, KeypointEstimator
+
+# ── 修改这两个值来控制 centre_feat 的两段维度，总和必须等于 kv_dim*2=512 ──
+HUMAN_CENTRE_DIM = 439
+OBJECT_CENTRE_DIM = 73
+
+# ---------------------------------------------------------
+# Utility: IOU
+# ---------------------------------------------------------
+def compute_iou(a, b):
+    """ a,b are [x1,y1,x2,y2] """
+    x1 = max(a[0], b[0])
+    y1 = max(a[1], b[1])
+    x2 = min(a[2], b[2])
+    y2 = min(a[3], b[3])
+
+    inter = max(0, x2 - x1) * max(0, y2 - y1)
+    if inter <= 0:
+        return 0.0
+
+    area_a = (a[2]-a[0]) * (a[3]-a[1])
+    area_b = (b[2]-b[0]) * (b[3]-b[1])
+
+    return inter / (area_a + area_b - inter)
+
+def attach_body_keypoints_to_region_props(region_props, body_result, human_idx=0):
+    """
+    region_props: list of dict of each image
+    body_result: dict[int -> list[body dict]]
+        body dict: {"bbox": [x1,y1,x2,y2], "conf": float, "keypoints": [[x,y,score], ...]}
+    Adds:
+        rp["body_keypoints"]: (n, 6, 3)  # 6个关键点 [x, y, score]
+        顺序: [头部, 左手腕, 右手腕, 左脚踝, 右脚踝, 身体中心]
+    """
+    HEAD_INDICES = [0, 1, 2, 3, 4]
+    LEFT_WRIST = 9
+    RIGHT_WRIST = 10
+    LEFT_ANKLE = 15
+    RIGHT_ANKLE = 16
+    BODY_CENTER_INDICES = [5, 6, 11, 12]
+
+    for i, rp in enumerate(region_props):
+        boxes = rp["boxes"]
+        labels = rp["labels"]
+        device = boxes.device
+        n = len(boxes)
+        body_kpts = torch.zeros((n, 6, 3), device=device)
+        human_ids = (labels == human_idx).nonzero(as_tuple=True)[0]
+
+        if i not in body_result or len(body_result[i]) == 0:
+            rp["body_keypoints"] = body_kpts
+            continue
+
+        bodies = body_result[i]
+        for hid in human_ids:
+            hb = boxes[hid].cpu().numpy()
+            best_body = None
+            best_iou = 0
+            for b in bodies:
+                bb = b["bbox"]
+                iou = compute_iou(hb, bb)
+                if iou > best_iou:
+                    best_iou = iou
+                    best_body = b
+
+            if best_body is not None:
+                kpts_full = torch.tensor(best_body["keypoints"], device=device)  # (17, 3)
+
+                # 0: 头部
+                head_kpts = kpts_full[HEAD_INDICES]
+                valid_head = head_kpts[:, 2] > 0
+                if valid_head.any():
+                    head_pos = head_kpts[valid_head, :2].mean(dim=0)
+                    head_conf = head_kpts[valid_head, 2].mean()
+                    body_kpts[hid, 0] = torch.tensor([head_pos[0], head_pos[1], head_conf], device=device)
+
+                # 1: 左手腕
+                body_kpts[hid, 1] = kpts_full[LEFT_WRIST]
+                # 2: 右手腕
+                body_kpts[hid, 2] = kpts_full[RIGHT_WRIST]
+                # 3: 左脚踝
+                body_kpts[hid, 3] = kpts_full[LEFT_ANKLE]
+                # 4: 右脚踝
+                body_kpts[hid, 4] = kpts_full[RIGHT_ANKLE]
+
+                # 5: 身体中心
+                body_center_kpts = kpts_full[BODY_CENTER_INDICES]
+                valid_center = body_center_kpts[:, 2] > 0
+                if valid_center.any():
+                    center_pos = body_center_kpts[valid_center, :2].mean(dim=0)
+                    center_conf = body_center_kpts[valid_center, 2].mean()
+                    body_kpts[hid, 5] = torch.tensor([center_pos[0], center_pos[1], center_conf], device=device)
+
+        rp["body_keypoints"] = body_kpts
+
+
+class MultiModalFusion(nn.Module):
+    def __init__(self, fst_mod_size, scd_mod_size, repr_size):
+        super().__init__()
+        self.fc1 = nn.Linear(fst_mod_size, repr_size)
+        self.fc2 = nn.Linear(scd_mod_size, repr_size)
+        self.ln1 = nn.LayerNorm(repr_size)
+        self.ln2 = nn.LayerNorm(repr_size)
+
+        mlp = []
+        repr_size_list = [2 * repr_size, int(repr_size * 1.5), repr_size]
+        for d_in, d_out in zip(repr_size_list[:-1], repr_size_list[1:]):
+            mlp.append(nn.Linear(d_in, d_out))
+            mlp.append(nn.ReLU())
+        self.mlp = nn.Sequential(*mlp)
+
+    def forward(self, x: Tensor, y: Tensor) -> Tensor:
+        x = self.ln1(self.fc1(x))
+        y = self.ln2(self.fc2(y))
+        z = F.relu(torch.cat([x, y], dim=-1))
+        z = self.mlp(z)
+        return z
+
+
+# ============================================================================
+#                              HumanObjectMatcher
+# ============================================================================
+class HumanObjectMatcher(nn.Module):
+    def __init__(self, repr_size, num_verbs, obj_to_verb,
+                 human_dim=HUMAN_CENTRE_DIM, obj_dim=OBJECT_CENTRE_DIM,
+                 dropout=.1, human_idx=0):
+        super().__init__()
+        self.repr_size = repr_size
+        self.num_verbs = num_verbs
+        self.human_idx = human_idx
+        self.obj_to_verb = obj_to_verb
+        self.human_centre_dim = human_dim   # human skeleton PE 输出维度
+        self.object_centre_dim = obj_dim    # object centre PE 输出维度
+
+        self.ref_anchor_head = nn.Sequential(
+            nn.Linear(256, 256), nn.ReLU(),
+            nn.Linear(256, 2)
+        )
+        self.ref_keypoint_head = nn.Sequential(
+            nn.Linear(256, 256), nn.ReLU(),
+            nn.Linear(256, 2)
+        )
+        self.spatial_head = nn.Sequential(
+            nn.Linear(36, 128), nn.ReLU(),
+            nn.Linear(128, 256), nn.ReLU(),
+            nn.Linear(256, repr_size), nn.ReLU(),
+        )
+        # kpts_pe: [N, 6, 256] → [N, 6*256] → [N, human_centre_dim]
+        self.kpts_pe_proj = nn.Linear(6 * 256, self.human_centre_dim)
+        # c_pe:   [N, 256]          → [N, object_centre_dim]
+        self.obj_c_pe_proj = nn.Linear(256, self.object_centre_dim)
+
+        self.encoder = TransformerEncoder(num_layers=2, dropout=dropout)
+        self.mmf = MultiModalFusion(512, repr_size, repr_size)
+
+        self.body_head = nn.Sequential(
+            nn.Linear(12, 128), nn.ReLU(),   # 12 = 6*2
+            nn.Linear(128, self.human_centre_dim)
+        )
+
+    def check_human_instances(self, labels):
+        is_human = labels == self.human_idx
+        nh = torch.sum(is_human)
+        if not torch.all(labels[:nh] == self.human_idx):
+            raise AssertionError("Human instances are not permuted to the top!")
+        return nh
+
+    def compute_box_pe(self, boxes, embeds, body_kpts, image_size):
+        """
+        body_kpts: [N, 6, 3]
+        returns:
+            box_pe:      [N, 512]
+            c_pe_out:    [N, object_centre_dim]
+            kpts_pe_out: [N, human_centre_dim]
+        """
+        bx_norm = boxes / image_size[[1, 0, 1, 0]]
+        bx_c = (bx_norm[:, :2] + bx_norm[:, 2:]) / 2
+        b_wh = bx_norm[:, 2:] - bx_norm[:, :2]
+
+        kpts_norm = body_kpts.clone()
+        kpts_norm[..., 0] /= image_size[1]   # x / W
+        kpts_norm[..., 1] /= image_size[0]   # y / H
+        kpts_xy = kpts_norm[..., :2]          # [N, 6, 2]
+
+        c_pe  = compute_sinusoidal_pe(bx_c[:, None], 20).squeeze(1)   # [N, 256]
+        wh_pe = compute_sinusoidal_pe(b_wh[:, None], 20).squeeze(1)   # [N, 256]
+        kpts_pe = compute_sinusoidal_pe(kpts_xy, 20)                   # [N, 6, 256]
+
+        box_pe = torch.cat([c_pe, wh_pe], dim=-1)                      # [N, 512]
+        ref_hw_cond = self.ref_anchor_head(embeds).sigmoid()
+
+        c_pe[..., :128] *= (ref_hw_cond[:, 1] / b_wh[:, 1]).unsqueeze(-1)
+        c_pe[..., 128:] *= (ref_hw_cond[:, 0] / b_wh[:, 0]).unsqueeze(-1)
+
+        kpts_conf = body_kpts[..., 2]          # [N, 6]
+        valid_mask = kpts_conf > 0.3
+
+        N = kpts_xy.shape[0]
+        kpts_wh = torch.zeros(N, 2, device=kpts_xy.device)
+
+        for i in range(N):
+            valid_kpts_i = kpts_xy[i][valid_mask[i]]
+            if len(valid_kpts_i) > 0:
+                kpts_min = valid_kpts_i.min(0)[0]
+                kpts_max = valid_kpts_i.max(0)[0]
+                kpts_wh[i] = kpts_max - kpts_min
+            else:
+                kpts_wh[i] = torch.ones(2, device=kpts_xy.device)
+
+        ref_kpts_wh = self.ref_keypoint_head(embeds).sigmoid()        # [N, 2]
+        kpts_scale  = ref_kpts_wh / (kpts_wh + 1e-6)
+
+        kpts_pe[..., :128] *= kpts_scale[:, 1].unsqueeze(-1).unsqueeze(-1)
+        kpts_pe[..., 128:] *= kpts_scale[:, 0].unsqueeze(-1).unsqueeze(-1)
+
+        # ── 投影到各自目标维度 ──
+        kpts_pe_out = self.kpts_pe_proj(kpts_pe.reshape(N, -1))   # [N, human_centre_dim]
+        c_pe_out    = self.obj_c_pe_proj(c_pe)                    # [N, object_centre_dim]
+
+        return box_pe, c_pe_out, kpts_pe_out
+
+    # ------------------------------------------------------------------------
+    # MAIN FORWARD
+    # ------------------------------------------------------------------------
+    def forward(self, region_props, image_sizes, device=None):
+        if device is None:
+            device = region_props[0]["hidden_states"].device
+
+        ho_queries        = []
+        paired_indices    = []
+        prior_scores      = []
+        object_types      = []
+        positional_embeds = []
+
+        for i, rp in enumerate(region_props):
+            boxes     = rp["boxes"]
+            scores    = rp["scores"]
+            labels    = rp["labels"]
+            embeds    = rp["hidden_states"]
+            body_kpts = rp["body_keypoints"]   # ← [N, 6, 3]  修复1: 用 body_keypoints
+
+            nh = self.check_human_instances(labels)
+            n  = len(boxes)
+
+            x, y = torch.meshgrid(
+                torch.arange(n, device=device),
+                torch.arange(n, device=device)
+            )
+            x_keep, y_keep = torch.nonzero(torch.logical_and(x != y, x < nh)).unbind(1)
+
+            if len(x_keep) == 0:
+                ho_queries.append(torch.zeros(0, self.repr_size, device=device))
+                paired_indices.append(torch.zeros(0, 2, device=device, dtype=torch.int64))
+                prior_scores.append(torch.zeros(0, 2, self.num_verbs, device=device))
+                object_types.append(torch.zeros(0, device=device, dtype=torch.int64))
+                positional_embeds.append({})
+                continue
+
+            pairwise_spatial = compute_spatial_encodings(
+                [boxes[x.flatten()],], [boxes[y.flatten()],], [image_sizes[i],]
+            )
+            pairwise_spatial = self.spatial_head(pairwise_spatial)
+            pairwise_spatial = pairwise_spatial.reshape(n, n, -1)
+
+            # box_pe: [N,512]  c_pe_out: [N,object_centre_dim]  kpts_pe_out: [N,human_centre_dim]
+            box_pe, c_pe_out, kpts_pe_out = self.compute_box_pe(   # ← 修复2: 接收正确变量名
+                boxes, embeds, body_kpts, image_sizes[i]
+            )
+            embeds, _ = self.encoder(embeds.unsqueeze(1), box_pe.unsqueeze(1))
+            embeds = embeds.squeeze(1)
+
+            ho_q = self.mmf(
+                torch.cat([embeds[x_keep], embeds[y_keep]], dim=1),
+                pairwise_spatial[x_keep, y_keep]
+            )
+
+            ho_queries.append(ho_q)
+            paired_indices.append(torch.stack([x_keep, y_keep], dim=1))
+            prior_scores.append(compute_prior_scores(
+                x_keep, y_keep, scores, labels,
+                self.num_verbs, self.training, self.obj_to_verb
+            ))
+            object_types.append(labels[y_keep])
+
+            centre_feat = torch.cat([
+                kpts_pe_out[x_keep],   # [num_pairs, human_centre_dim]
+                c_pe_out[y_keep],      # [num_pairs, object_centre_dim]
+            ], dim=-1)                 # [num_pairs, human_centre_dim + object_centre_dim = 512]
+
+            positional_embeds.append({
+                "centre": centre_feat.unsqueeze(1),                                           # (num_pairs, 1, 512)
+                "box":    torch.cat([box_pe[x_keep], box_pe[y_keep]], dim=-1).unsqueeze(1)    # (num_pairs, 1, 1024)
+            })
+
+        return ho_queries, paired_indices, prior_scores, object_types, positional_embeds
+
+
+class Permute(nn.Module):
+    def __init__(self, dims: List[int]):
+        super().__init__()
+        self.dims = dims
+    def forward(self, x: Tensor) -> Tensor:
+        return x.permute(self.dims)
+
+class FeatureHead(nn.Module):
+    def __init__(self, dim, dim_backbone, return_layer, num_layers):
+        super().__init__()
+        self.dim = dim
+        self.dim_backbone = dim_backbone
+        self.return_layer = return_layer
+
+        in_channel_list = [
+            int(dim_backbone * 2 ** i)
+            for i in range(return_layer + 1, 1)
+        ]
+        self.fpn = FeaturePyramidNetwork(in_channel_list, dim)
+        self.layers = nn.Sequential(
+            Permute([0, 2, 3, 1]),
+            SwinTransformer(dim, num_layers)
+        )
+    def forward(self, x):
+        pyramid = OrderedDict(
+            (f"{i}", x[i].tensors)
+            for i in range(self.return_layer, 0)
+        )
+        mask = x[self.return_layer].mask
+        x = self.fpn(pyramid)[f"{self.return_layer}"]
+        x = self.layers(x)
+        return x, mask
+
+def inverse_sigmoid(x, eps=1e-5):
+    x = x.clamp(min=0, max=1)
+    x1 = x.clamp(min=eps)
+    x2 = (1 - x).clamp(min=eps)
+    return torch.log(x1 / x2)
+
+class headhoi(nn.Module):
+    """CJ"""
+
+    def __init__(self,
+        detector: nn.Module, body_pose_estimater: BodyPoseEstimator, postprocessor: nn.Module,
+        feature_head: nn.Module, ho_matcher: nn.Module,
+        triplet_decoder: nn.Module, num_verbs: int,
+        repr_size: int = 384, human_idx: int = 0,
+        alpha: float = 0.5, gamma: float = .1,
+        box_score_thresh: float = .05,
+        min_instances: int = 3,
+        max_instances: int = 15,
+        raw_lambda: float = 2.8,
+    ) -> None:
+        super().__init__()
+
+        self.detector = detector
+        self.body_detector = body_pose_estimater
+        self.postprocessor = postprocessor
+
+        self.ho_matcher = ho_matcher
+        self.feature_head = feature_head
+        self.kv_pe = PositionEmbeddingSine(128, 20, normalize=True)
+        self.decoder = triplet_decoder
+        self.binary_classifier = nn.Linear(repr_size, num_verbs)
+
+        self.repr_size = repr_size
+        self.human_idx = human_idx
+        self.num_verbs = num_verbs
+        self.alpha = alpha
+        self.gamma = gamma
+        self.box_score_thresh = box_score_thresh
+        self.min_instances = min_instances
+        self.max_instances = max_instances
+        self.raw_lambda = raw_lambda
+
+    def freeze_detector(self):
+        for p in self.detector.parameters():
+            p.requires_grad = False
+
+    def compute_classification_loss(self, logits, prior, labels):
+        prior = torch.cat(prior, dim=0).prod(1)
+        x, y = torch.nonzero(prior).unbind(1)
+
+        logits = logits[:, x, y]
+        prior = prior[x, y]
+        labels = labels[None, x, y].repeat(len(logits), 1)
+
+        n_p = labels.sum()
+        if dist.is_initialized():
+            world_size = dist.get_world_size()
+            n_p = torch.as_tensor([n_p], device='cuda')
+            dist.barrier()
+            dist.all_reduce(n_p)
+            n_p = (n_p / world_size).item()
+
+        loss = binary_focal_loss_with_logits(
+            torch.log(
+                prior / (1 + torch.exp(-logits) - prior) + 1e-8
+            ), labels, reduction='sum',
+            alpha=self.alpha, gamma=self.gamma
+        )
+
+        return loss / n_p
+
+    def postprocessing(self,
+            boxes, paired_inds, object_types,
+            logits, prior, image_sizes
+        ):
+        n = [len(p_inds) for p_inds in paired_inds]
+        logits = logits.split(n)
+
+        detections = []
+        for bx, p_inds, objs, lg, pr, size in zip(
+            boxes, paired_inds, object_types,
+            logits, prior, image_sizes
+        ):
+            pr = pr.prod(1)
+            x, y = torch.nonzero(pr).unbind(1)
+            scores = lg[x, y].sigmoid() * pr[x, y].pow(self.raw_lambda)
+            detections.append(dict(
+                boxes=bx, pairing=p_inds[x], scores=scores,
+                labels=y, objects=objs[x], size=size, x=x
+            ))
+
+        return detections
+
+    @staticmethod
+    def base_forward(ctx, samples: NestedTensor):
+        if isinstance(samples, (list, torch.Tensor)):
+            samples = nested_tensor_from_tensor_list(samples)
+        features, pos = ctx.backbone(samples)
+
+        src, mask = features[-1].decompose()
+        assert mask is not None
+        hs = ctx.transformer(ctx.input_proj(src), mask, ctx.query_embed.weight, pos[-1])[0]
+
+        outputs_class = ctx.class_embed(hs)
+        outputs_coord = ctx.bbox_embed(hs).sigmoid()
+        out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
+        return out, hs, features
+
+    def forward(self,
+        images: List[Tensor],
+        targets: Optional[List[dict]] = None
+    ) -> List[dict]:
+        if self.training and targets is None:
+            raise ValueError("In training mode, targets should be passed")
+        image_sizes = torch.as_tensor([im.size()[-2:] for im in images], device=images[0].device)
+
+        with torch.no_grad():
+            results, hs, features = self.base_forward(self.detector, images)
+            results = self.postprocessor(results, image_sizes)
+
+        region_props = prepare_region_proposals(
+            results, hs[-1], image_sizes,
+            box_score_thresh=self.box_score_thresh,
+            human_idx=self.human_idx,
+            min_instances=self.min_instances,
+            max_instances=self.max_instances
+        )
+        boxes = [r['boxes'] for r in region_props]
+        region_props = self.body_detector(region_props, images)
+
+        (
+            ho_queries,
+            paired_inds, prior_scores,
+            object_types, positional_embeds
+        ) = self.ho_matcher(region_props, image_sizes)
+
+        memory, mask = self.feature_head(features)
+        b, h, w, c = memory.shape
+        memory = memory.reshape(b, h * w, c)
+        kv_p_m = mask.reshape(-1, 1, h * w)
+        k_pos = self.kv_pe(NestedTensor(memory, mask)).permute(0, 2, 3, 1).reshape(b, h * w, 1, c)
+
+        query_embeds = []
+        for i, (ho_q, mem) in enumerate(zip(ho_queries, memory)):
+            query_embeds.append(self.decoder(
+                ho_q.unsqueeze(1),
+                mem.unsqueeze(1),
+                kv_padding_mask=kv_p_m[i],
+                q_pos=positional_embeds[i],
+                k_pos=k_pos[i]
+            ).squeeze(dim=2))
+
+        query_embeds = torch.cat(query_embeds, dim=1)
+        logits = self.binary_classifier(query_embeds)
+
+        if self.training:
+            labels = associate_with_ground_truth(
+                boxes, paired_inds, targets, self.num_verbs
+            )
+            cls_loss = self.compute_classification_loss(logits, prior_scores, labels)
+            loss_dict = dict(cls_loss=cls_loss)
+            return loss_dict
+
+        detections = self.postprocessing(
+            boxes, paired_inds, object_types,
+            logits[-1], prior_scores, image_sizes
+        )
+        return detections
+
+def build_detector(args, obj_to_verb):
+
+    detr, _, postprocessors = build_base_detr(args)
+
+    if os.path.exists(args.pretrained):
+        if dist.is_initialized():
+            print(f"Rank {dist.get_rank()}: Load weights for the object detector from {args.pretrained}")
+        else:
+            print(f"Load weights for the object detector from {args.pretrained}")
+        detr.load_state_dict(torch.load(args.pretrained, map_location='cpu')['model_state_dict'])
+
+    ho_matcher = HumanObjectMatcher(
+        repr_size=args.repr_dim,
+        num_verbs=args.num_verbs,
+        obj_to_verb=obj_to_verb,
+        human_dim=HUMAN_CENTRE_DIM,
+        obj_dim=OBJECT_CENTRE_DIM,
+        dropout=args.dropout
+    )
+    decoder_layer = TransformerDecoderLayer(
+        q_dim=args.repr_dim, kv_dim=args.hidden_dim,
+        ffn_interm_dim=args.repr_dim * 4,
+        num_heads=args.nheads, dropout=args.dropout
+    )
+    triplet_decoder = TransformerDecoder(
+        decoder_layer=decoder_layer,
+        num_layers=args.triplet_dec_layers
+    )
+    return_layer = {"C5": -1, "C4": -2, "C3": -3}[args.kv_src]
+    if isinstance(detr.backbone.num_channels, list):
+        num_channels = detr.backbone.num_channels[-1]
+    else:
+        num_channels = detr.backbone.num_channels
+    feature_head = FeatureHead(
+        args.hidden_dim, num_channels,
+        return_layer, args.triplet_enc_layers
+    )
+    kpt_estimator = KeypointEstimator()
+    body_pose_estimator = BodyPoseEstimator(pose_model=kpt_estimator, human_idx=0)
+    model = headhoi(
+        detr, body_pose_estimator, postprocessors['bbox'],
+        feature_head=feature_head,
+        ho_matcher=ho_matcher,
+        triplet_decoder=triplet_decoder,
+        num_verbs=args.num_verbs,
+        repr_size=args.repr_dim,
+        alpha=args.alpha, gamma=args.gamma,
+        box_score_thresh=args.box_score_thresh,
+        min_instances=args.min_instances,
+        max_instances=args.max_instances,
+        raw_lambda=args.raw_lambda,
+    )
+    return model
