@@ -49,8 +49,7 @@ Query Refinement in Human--Object Interaction Detection}
 {\normalsize $^{a}$Department of Mechanical and Aerospace Engineering, Monash University, Clayton, VIC 3800, Australia}\\[12pt]
 {\footnotesize $^\ast$Corresponding author.}\\[2pt]
 {\footnotesize E-mail addresses: \texttt{reginaldjcy@gmail.com} (C.~Jiang), [e-mail] (C.~Chen), [e-mail] (M.Y.~Wang).}\\[2pt]
-{\footnotesize ORCID: [ORCID] (C.~Jiang); [ORCID] (C.~Chen); [ORCID] (M.Y.~Wang).}\\[10pt]
-{\footnotesize\itshape Declarations of interest: none.}
+{\footnotesize ORCID: [ORCID] (C.~Jiang); [ORCID] (C.~Chen); [ORCID] (M.Y.~Wang).}
 }
 \date{}
 
@@ -93,6 +92,9 @@ costs accuracy relative to the $17$ native COCO joints, and how the fixed
 $512$-dimensional positional budget is \emph{split} between the human and the
 object matters as much as what is put into it.
 \end{abstract}
+
+\noindent\textbf{Keywords:} Human--object interaction detection; Human pose
+estimation; Positional query; Transformer; Two-stage detection
 
 % =====================================================================
 \section{Introduction}
@@ -209,7 +211,7 @@ separates the merit of the prior from the noise of the pose estimator
 \end{enumerate}
 
 % =====================================================================
-\section{Related Work}
+\section{Related work}
 \label{sec:related}
 
 \subsection{Two-stage and one-stage HOI detection}
@@ -513,6 +515,9 @@ it is frozen and batched per image, it does not enter the backward pass at all.
 
 \begin{table}[t]
 \centering\small
+\caption{Parameters added to the interaction head. $W_h$ dominates and grows
+linearly in the number of keypoints $K$; nothing else in the model changes.}
+\label{tab:params}
 \setlength{\tabcolsep}{4.5pt}
 \begin{tabular}{lrrr}
 \toprule
@@ -526,13 +531,10 @@ $K{=}23$, $256/256$   & \phantom{0}1.51\,M & 0.13\,M & 1.64\,M \\
 $K{=}31$, $256/256$   & \phantom{0}2.03\,M & 0.13\,M & 2.16\,M \\
 \bottomrule
 \end{tabular}
-\caption{Parameters added to the interaction head. $W_h$ dominates and grows
-linearly in the number of keypoints $K$; nothing else in the model changes.}
-\label{tab:params}
 \end{table}
 
 % =====================================================================
-\section{Experimental Setup}
+\section{Experiments}
 \label{sec:setup}
 
 \subsection{Datasets}
@@ -566,6 +568,10 @@ is removed from V-COCO and one in five from HICO-DET.
 
 \begin{table}[t]
 \centering\small
+\caption{The human-clarity subset. ``All'' counts images with at least one
+annotated interaction; ``Clear'' counts those retained by the confidence filter
+of \S\ref{sec:filtering}.}
+\label{tab:data}
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{llrrr}
 \toprule
@@ -580,10 +586,6 @@ Dataset & Split & All & Clear & Kept \\
   & test2015  & \phantom{0}9{,}658  & \phantom{0}7{,}658  & 79.3\% \\
 \bottomrule
 \end{tabular}
-\caption{The human-clarity subset. ``All'' counts images with at least one
-annotated interaction; ``Clear'' counts those retained by the confidence filter
-of \S\ref{sec:filtering}.}
-\label{tab:data}
 \end{table}
 
 \subsection{Metrics}
@@ -619,10 +621,6 @@ $\alpha = 0.5$, $\gamma = 0.1$, combined multiplicatively with the detector's
 prior scores raised to $\lambda = 2.8$. The random seed is fixed at $140$. One
 V-COCO epoch takes approximately $19$ minutes in this configuration.
 
-% =====================================================================
-\section{Results}
-\label{sec:results}
-
 \subsection{Main comparison}
 
 Table~\ref{tab:main} compares DetailHOI at its default setting ($K{=}17$,
@@ -646,6 +644,11 @@ orthogonal and complementary axis to ours.
 
 \begin{table}[t]
 \centering\small
+\caption{Main results at epoch $30$, identical schedules throughout.
+$^{\dagger}$V-COCO numbers use the in-repository diagnostic evaluator and are
+internally comparable only (\S\ref{sec:setup}). The skeletal prior helps the
+aggregate and the non-rare split; it does not help rare classes.}
+\label{tab:main}
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{lcccc}
 \toprule
@@ -658,11 +661,6 @@ PViC baseline                     & 71.28 & 33.35 & \textbf{28.59} & 34.77 \\
 \quad + human-clarity training set & 71.33 & 33.51 & 28.79 & 34.92 \\
 \bottomrule
 \end{tabular}
-\caption{Main results at epoch $30$, identical schedules throughout.
-$^{\dagger}$V-COCO numbers use the in-repository diagnostic evaluator and are
-internally comparable only (\S\ref{sec:setup}). The skeletal prior helps the
-aggregate and the non-rare split; it does not help rare classes.}
-\label{tab:main}
 \end{table}
 
 \subsection{Ablations on the human-clarity subset}
@@ -689,6 +687,12 @@ single-epoch fluctuation.}
 
 \begin{table}[t]
 \centering\small
+\caption{Keypoint granularity and positional budget, V-COCO human-clarity
+subset. All rows are trained and evaluated on the same subset under the same
+schedule. The two interpolated skeletons are clearly worse; the $17$ native
+joints with an asymmetric budget are best, and are markedly more stable across
+the final ten epochs.}
+\label{tab:ablation}
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{lccc}
 \toprule
@@ -700,12 +704,6 @@ $K{=}23$ interpolated             & 256/256 & 63.63 & 63.44 \\
 $K{=}31$ interpolated             & 256/256 & 63.65 & 63.51 \\
 \bottomrule
 \end{tabular}
-\caption{Keypoint granularity and positional budget, V-COCO human-clarity
-subset. All rows are trained and evaluated on the same subset under the same
-schedule. The two interpolated skeletons are clearly worse; the $17$ native
-joints with an asymmetric budget are best, and are markedly more stable across
-the final ten epochs.}
-\label{tab:ablation}
 \end{table}
 
 \begin{figure}[t]
@@ -807,6 +805,9 @@ evaluator.
 
 \begin{table}[t]
 \centering\small
+\caption{HICO-DET in context. Rows above the rule are quoted from the
+respective papers under their own training recipes; rows below share ours.}
+\label{tab:sota}
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{llccc}
 \toprule
@@ -820,9 +821,6 @@ PViC (our schedule)              & R50 & 33.35 & 28.59 & 34.77 \\
 \textbf{DetailHOI} (ours)        & R50 & 33.74 & 28.23 & 35.39 \\
 \bottomrule
 \end{tabular}
-\caption{HICO-DET in context. Rows above the rule are quoted from the
-respective papers under their own training recipes; rows below share ours.}
-\label{tab:sota}
 \end{table}
 
 % =====================================================================
@@ -948,171 +946,109 @@ made available at [repository URL] upon acceptance.
 % =====================================================================
 {\small
 % NOTE: entries marked [verify] are carried over from the project's earlier
-% draft and their bibliographic details should be checked against the source
-% before submission.
+% draft; their bibliographic details (and any page ranges below, which are
+% not fabricated where unknown) should be checked against the source before
+% submission.
 \begin{thebibliography}{99}\itemsep1pt
 
 \bibitem{carion2020detr}
-N.~Carion, F.~Massa, G.~Synnaeve, N.~Usunier, A.~Kirillov, and S.~Zagoruyko.
-\newblock End-to-end object detection with transformers.
-\newblock In \emph{ECCV}, 2020.
+N.~Carion, F.~Massa, G.~Synnaeve, N.~Usunier, A.~Kirillov, S.~Zagoruyko, End-to-end object detection with transformers, in: Proceedings of the European Conference on Computer Vision, 2020, pp.~213--229.
 
 \bibitem{zhang2023pvic}
-F.~Z. Zhang, Y.~Yuan, D.~Campbell, Z.~Zhong, and S.~Gould.
-\newblock Exploring predicate visual context in detecting human--object interactions.
-\newblock In \emph{ICCV}, 2023.
+F.Z. Zhang, Y.~Yuan, D.~Campbell, Z.~Zhong, S.~Gould, Exploring predicate visual context in detecting human-object interactions, in: Proceedings of the IEEE/CVF International Conference on Computer Vision, 2023.
 
 \bibitem{zhang2022upt}
-F.~Z. Zhang, D.~Campbell, and S.~Gould.
-\newblock Efficient two-stage detection of human--object interactions with a novel unary--pairwise transformer.
-\newblock In \emph{CVPR}, 2022.
+F.Z. Zhang, D.~Campbell, S.~Gould, Efficient two-stage detection of human-object interactions with a novel unary-pairwise transformer, in: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2022, pp.~20104--20112.
 
 \bibitem{zhang2021scg}
-F.~Z. Zhang, D.~Campbell, and S.~Gould.
-\newblock Spatially conditioned graphs for detecting human--object interactions.
-\newblock In \emph{ICCV}, 2021.
+F.Z. Zhang, D.~Campbell, S.~Gould, Spatially conditioned graphs for detecting human-object interactions, in: Proceedings of the IEEE/CVF International Conference on Computer Vision, 2021, pp.~13319--13327.
 
 \bibitem{tamura2021qpic}
-M.~Tamura, H.~Ohashi, and T.~Yoshinaga.
-\newblock QPIC: Query-based pairwise human--object interaction detection with image-wide contextual information.
-\newblock In \emph{CVPR}, 2021.
+M.~Tamura, H.~Ohashi, T.~Yoshinaga, QPIC: query-based pairwise human-object interaction detection with image-wide contextual information, in: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2021, pp.~10410--10419.
 
 \bibitem{kim2021hotr}
-B.~Kim, J.~Lee, J.~Kang, E.-S. Kim, and H.~J. Kim.
-\newblock HOTR: End-to-end human--object interaction detection with transformers.
-\newblock In \emph{CVPR}, 2021.
+B.~Kim, J.~Lee, J.~Kang, E.-S. Kim, H.J. Kim, HOTR: end-to-end human-object interaction detection with transformers, in: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2021, pp.~74--83.
 
 \bibitem{zou2021hoitrans}
-C.~Zou, B.~Wang, Y.~Hu, J.~Liu, Q.~Wu, Y.~Zhao, B.~Li, C.~Zhang, C.~Zhang,
-Y.~Wei, and J.~Sun.
-\newblock End-to-end human object interaction detection with HOI transformer.
-\newblock In \emph{CVPR}, 2021.
+C.~Zou, B.~Wang, Y.~Hu, J.~Liu, Q.~Wu, Y.~Zhao, B.~Li, C.~Zhang, C.~Zhang, Y.~Wei, J.~Sun, End-to-end human object interaction detection with HOI transformer, in: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2021, pp.~11825--11834.
 
 \bibitem{meng2021conditional}
-D.~Meng, X.~Chen, Z.~Fan, G.~Zeng, H.~Li, Y.~Yuan, L.~Sun, and J.~Wang.
-\newblock Conditional DETR for fast training convergence.
-\newblock In \emph{ICCV}, 2021.
+D.~Meng, X.~Chen, Z.~Fan, G.~Zeng, H.~Li, Y.~Yuan, L.~Sun, J.~Wang, Conditional DETR for fast training convergence, in: Proceedings of the IEEE/CVF International Conference on Computer Vision, 2021, pp.~3651--3660.
 
 \bibitem{liu2022dabdetr}
-S.~Liu, F.~Li, H.~Zhang, X.~Yang, X.~Qi, H.~Su, J.~Zhu, and L.~Zhang.
-\newblock DAB-DETR: Dynamic anchor boxes are better queries for DETR.
-\newblock In \emph{ICLR}, 2022.
+S.~Liu, F.~Li, H.~Zhang, X.~Yang, X.~Qi, H.~Su, J.~Zhu, L.~Zhang, DAB-DETR: dynamic anchor boxes are better queries for DETR, in: Proceedings of the International Conference on Learning Representations, 2022.
 
 \bibitem{zhu2021deformable}
-X.~Zhu, W.~Su, L.~Lu, B.~Li, X.~Wang, and J.~Dai.
-\newblock Deformable DETR: Deformable transformers for end-to-end object detection.
-\newblock In \emph{ICLR}, 2021.
+X.~Zhu, W.~Su, L.~Lu, B.~Li, X.~Wang, J.~Dai, Deformable DETR: deformable transformers for end-to-end object detection, in: Proceedings of the International Conference on Learning Representations, 2021.
 
 \bibitem{ren2015faster}
-S.~Ren, K.~He, R.~Girshick, and J.~Sun.
-\newblock Faster R-CNN: Towards real-time object detection with region proposal networks.
-\newblock In \emph{NeurIPS}, 2015.
+S.~Ren, K.~He, R.~Girshick, J.~Sun, Faster R-CNN: towards real-time object detection with region proposal networks, in: Advances in Neural Information Processing Systems, vol.~28, 2015, pp.~91--99.
 
 \bibitem{gkioxari2018interactnet}
-G.~Gkioxari, R.~Girshick, P.~Doll\'{a}r, and K.~He.
-\newblock Detecting and recognizing human--object interactions.
-\newblock In \emph{CVPR}, 2018.
+G.~Gkioxari, R.~Girshick, P.~Doll\'{a}r, K.~He, Detecting and recognizing human-object interactions, in: Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, 2018, pp.~8359--8367.
 
 \bibitem{li2019tin}
-Y.-L. Li, S.~Zhou, X.~Huang, L.~Xu, Z.~Ma, H.-S. Fang, Y.~Wang, and C.~Lu.
-\newblock Transferable interactiveness knowledge for human--object interaction detection.
-\newblock In \emph{CVPR}, 2019.
+Y.-L. Li, S.~Zhou, X.~Huang, L.~Xu, Z.~Ma, H.-S. Fang, Y.~Wang, C.~Lu, Transferable interactiveness knowledge for human-object interaction detection, in: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2019, pp.~3585--3594.
 
 \bibitem{gupta2019nofrills}
-T.~Gupta, A.~Schwing, and D.~Hoiem.
-\newblock No-frills human--object interaction detection: Factorization, layout encodings, and training techniques.
-\newblock In \emph{ICCV}, 2019.
+T.~Gupta, A.~Schwing, D.~Hoiem, No-frills human-object interaction detection: factorization, layout encodings, and training techniques, in: Proceedings of the IEEE/CVF International Conference on Computer Vision, 2019, pp.~9676--9684.
 
 \bibitem{wan2019pmfnet}
-B.~Wan, D.~Zhou, Y.~Liu, R.~Li, and X.~He.
-\newblock Pose-aware multi-level feature network for human object interaction detection.
-\newblock In \emph{ICCV}, 2019.
+B.~Wan, D.~Zhou, Y.~Liu, R.~Li, X.~He, Pose-aware multi-level feature network for human object interaction detection, in: Proceedings of the IEEE/CVF International Conference on Computer Vision, 2019, pp.~9469--9478.
 
 \bibitem{liao2022genvlkt}
-Y.~Liao, A.~Zhang, M.~Lu, Y.~Wang, X.~Li, and S.~Liu.
-\newblock GEN-VLKT: Simplify association and enhance interaction understanding for HOI detection.
-\newblock In \emph{CVPR}, 2022.
+Y.~Liao, A.~Zhang, M.~Lu, Y.~Wang, X.~Li, S.~Liu, GEN-VLKT: simplify association and enhance interaction understanding for HOI detection, in: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2022.
 
 \bibitem{ning2023hoiclip}
-S.~Ning, L.~Qiu, Y.~Liu, and X.~He.
-\newblock HOICLIP: Efficient knowledge transfer for HOI detection with vision--language models.
-\newblock In \emph{CVPR}, 2023.
+S.~Ning, L.~Qiu, Y.~Liu, X.~He, HOICLIP: efficient knowledge transfer for HOI detection with vision-language models, in: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2023, pp.~23507--23517.
 
 \bibitem{cao2023unihoi}
-Y.~Cao, Q.~Tang, X.~Su, C.~Song, S.~You, X.~Lu, and C.~Xu.
-\newblock Detecting any human--object interaction relationship: Universal HOI detector with spatial prompt learning on foundation models.
-\newblock In \emph{NeurIPS}, 2023.
+Y.~Cao, Q.~Tang, X.~Su, C.~Song, S.~You, X.~Lu, C.~Xu, Detecting any human-object interaction relationship: universal HOI detector with spatial prompt learning on foundation models, in: Advances in Neural Information Processing Systems, vol.~36, 2023.
 
 \bibitem{radford2021clip}
-A.~Radford, J.~W. Kim, C.~Hallacy, A.~Ramesh, G.~Goh, S.~Agarwal, G.~Sastry,
-A.~Askell, P.~Mishkin, J.~Clark, G.~Krueger, and I.~Sutskever.
-\newblock Learning transferable visual models from natural language supervision.
-\newblock In \emph{ICML}, 2021.
+A.~Radford, J.W. Kim, C.~Hallacy, A.~Ramesh, G.~Goh, S.~Agarwal, G.~Sastry, A.~Askell, P.~Mishkin, J.~Clark, G.~Krueger, I.~Sutskever, Learning transferable visual models from natural language supervision, in: Proceedings of the International Conference on Machine Learning, 2021, pp.~8748--8763.
 
 \bibitem{jiang2023rtmpose}
-T.~Jiang, P.~Lu, L.~Zhang, N.~Ma, R.~Han, C.~Lyu, Y.~Li, and K.~Chen.
-\newblock RTMPose: Real-time multi-person pose estimation based on MMPose.
-\newblock \emph{arXiv:2303.07399}, 2023.
+T.~Jiang, P.~Lu, L.~Zhang, N.~Ma, R.~Han, C.~Lyu, Y.~Li, K.~Chen, RTMPose: real-time multi-person pose estimation based on MMPose, arXiv:2303.07399, 2023.
 
 \bibitem{li2022simcc}
-Y.~Li, S.~Yang, P.~Liu, S.~Zhang, Y.~Wang, Z.~Wang, W.~Yang, and S.-T. Xia.
-\newblock SimCC: A simple coordinate classification perspective for human pose estimation.
-\newblock In \emph{ECCV}, 2022.
+Y.~Li, S.~Yang, P.~Liu, S.~Zhang, Y.~Wang, Z.~Wang, W.~Yang, S.-T. Xia, SimCC: a simple coordinate classification perspective for human pose estimation, in: Proceedings of the European Conference on Computer Vision, 2022.
 
 \bibitem{lin2014coco}
-T.-Y. Lin, M.~Maire, S.~Belongie, J.~Hays, P.~Perona, D.~Ramanan,
-P.~Doll\'{a}r, and C.~L. Zitnick.
-\newblock Microsoft COCO: Common objects in context.
-\newblock In \emph{ECCV}, 2014.
+T.-Y. Lin, M.~Maire, S.~Belongie, J.~Hays, P.~Perona, D.~Ramanan, P.~Doll\'{a}r, C.L. Zitnick, Microsoft COCO: common objects in context, in: Proceedings of the European Conference on Computer Vision, 2014, pp.~740--755.
 
 \bibitem{chao2018hicodet}
-Y.-W. Chao, Y.~Liu, X.~Liu, H.~Zeng, and J.~Deng.
-\newblock Learning to detect human--object interactions.
-\newblock In \emph{WACV}, 2018.
+Y.-W. Chao, Y.~Liu, X.~Liu, H.~Zeng, J.~Deng, Learning to detect human-object interactions, in: Proceedings of the IEEE Winter Conference on Applications of Computer Vision, 2018, pp.~381--389.
 
 \bibitem{gupta2015vcoco}
-S.~Gupta and J.~Malik.
-\newblock Visual semantic role labeling.
-\newblock \emph{arXiv:1505.04474}, 2015.
+S.~Gupta, J.~Malik, Visual semantic role labeling, arXiv:1505.04474, 2015.
 
 \bibitem{lin2017focal}
-T.-Y. Lin, P.~Goyal, R.~Girshick, K.~He, and P.~Doll\'{a}r.
-\newblock Focal loss for dense object detection.
-\newblock In \emph{ICCV}, 2017.
+T.-Y. Lin, P.~Goyal, R.~Girshick, K.~He, P.~Doll\'{a}r, Focal loss for dense object detection, in: Proceedings of the IEEE International Conference on Computer Vision, 2017, pp.~2980--2988.
 
 \bibitem{loshchilov2019adamw}
-I.~Loshchilov and F.~Hutter.
-\newblock Decoupled weight decay regularization.
-\newblock In \emph{ICLR}, 2019.
+I.~Loshchilov, F.~Hutter, Decoupled weight decay regularization, in: Proceedings of the International Conference on Learning Representations, 2019.
 
 \bibitem{yolov8}
-G.~Jocher, A.~Chaurasia, and J.~Qiu.
-\newblock Ultralytics YOLOv8.
-\newblock \url{https://github.com/ultralytics/ultralytics}, 2023.
+G.~Jocher, A.~Chaurasia, J.~Qiu, Ultralytics YOLOv8, \url{https://github.com/ultralytics/ultralytics}, 2023.
 
 \bibitem{liu2023horp}
-S.~Liu et~al.
-\newblock HORP: 3D location and gaze priors for human--object interaction detection. % [verify]
-\newblock 2023.
+S.~Liu, et~al., HORP: 3D location and gaze priors for human-object interaction detection, 2023. % [verify]
 
 \bibitem{hoigaze}
-Z.~Hu et~al.
-\newblock HOIGaze: Gaze estimation during hand--object interactions learned from eye--head coordination. % [verify]
-\newblock 2025.
+Z.~Hu, et~al., HOIGaze: gaze estimation during hand-object interactions learned from eye-head coordination, 2025. % [verify]
 
 \bibitem{hagi}
-Z.~Hu et~al.
-\newblock HAGI++: Multi-modal gaze imputation from head orientation. % [verify]
-\newblock 2025.
+Z.~Hu, et~al., HAGI++: multi-modal gaze imputation from head orientation, 2025. % [verify]
 
 \bibitem{pain}
-PAIN: Pose-attention interaction network for human--object interaction detection. % [verify]
+PAIN: pose-attention interaction network for human-object interaction detection. % [verify]
 
 \bibitem{geovisgnn}
-GeoVis-GNN: Geometric visual fusion graph neural network for human--object interaction. % [verify]
+GeoVis-GNN: geometric visual fusion graph neural network for human-object interaction. % [verify]
 
 \bibitem{vrdiff}
-VRDiff: Learning visual relation representations with generative diffusion. % [verify]
+VRDiff: learning visual relation representations with generative diffusion. % [verify]
 
 \end{thebibliography}
 }
