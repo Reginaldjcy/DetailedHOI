@@ -85,12 +85,17 @@ the inference cost of the pipeline are untouched, and it adds $1.77$M parameters
 On V-COCO and HICO-DET, DetailHOI improves over a PViC baseline trained under
 identical settings, reaching $71.42$ mAP on V-COCO and $33.74$ mAP on HICO-DET
 against $71.28$ and $33.35$ respectively, with the gain concentrated on
-non-rare classes ($34.77 \rightarrow 35.39$). Our ablations report a result we
-believe is more useful than the headline: \emph{denser skeletons are worse}.
-Interpolating additional points along the skeleton graph ($K = 23$, $K = 31$)
-costs accuracy relative to the $17$ native COCO joints, and how the fixed
-$512$-dimensional positional budget is \emph{split} between the human and the
-object matters as much as what is put into it.
+non-rare classes ($34.77 \rightarrow 35.39$). Our controlled ablations report
+two results we believe are more useful than the headline. First,
+\emph{denser skeletons do not help}: interpolating additional points along the
+skeleton graph ($K = 23$, $K = 31$) falls $0.35$--$0.50$ mAP short of the $17$
+native COCO joints, because a single linear projection already spans every
+convex combination of the joints it is given. Second, where a duplicated
+configuration lets us measure a run-to-run spread of $\approx 0.1$ mAP, the
+skeletal prior's advantage in \emph{peak} accuracy is inside that spread and we
+report it as a tie---while its advantage in \emph{end-of-schedule} accuracy
+($+0.26$ mAP averaged over the final five epochs, with a peak-to-final give-back
+of $0.01$ against the baseline's $0.38$) sits well outside it.
 \end{abstract}
 
 \noindent\textbf{Keywords:} Human--object interaction detection; Human pose
@@ -196,13 +201,22 @@ the detector, decoder, loss and inference schedule untouched
 \item \textbf{An asymmetric positional budget.} Because the human and object
 halves of the positional query no longer carry the same kind of information,
 there is no reason for them to be the same size. We treat the split
-$(D_h, D_o)$ as a design variable and show it matters: $384/128$ beats
-$256/256$ under an identical keypoint set (\S\ref{sec:ablation}).
+$(D_h, D_o)$ as a design variable rather than an implementation detail, and
+report that the only configuration reaching the baseline is the one that gives
+the human side more than half the budget---while being explicit that our runs
+never cross the split against the keypoint count, so the two effects cannot be
+separated on this evidence (\S\ref{sec:ablation}).
 \item \textbf{A negative result on skeletal density.} We densify the skeleton by
 interpolating points along the COCO skeleton graph, reaching $K=23$ and $K=31$.
-Both are \emph{worse} than the $17$ native joints. Interpolated points are
-deterministic functions of the joints they lie between; they add parameters and
-dilute the projection without adding information (\S\ref{sec:ablation}).
+Both fall $0.35$--$0.50$ mAP short of the $17$ native joints, several times the
+run-to-run spread we measure. Interpolated points are deterministic functions of
+the joints they lie between; a single linear projection already spans those
+combinations, so they add parameters and dilute the stack without adding
+information (\S\ref{sec:ablation}).
+\item \textbf{A measured noise floor.} We repeat one configuration and use the
+resulting $\approx\!0.1$ mAP run-to-run spread as the resolution of every
+comparison we make, which is what lets us report the peak-accuracy result as a
+tie rather than as a win (\S\ref{sec:ablation}).
 \item \textbf{A human-clarity evaluation protocol.} We isolate the subset of
 each benchmark in which instances are large and unambiguous enough for pose
 estimation to be reliable, and report a controlled comparison on it, which
@@ -609,17 +623,23 @@ are internal.
 The instance detector is DETR-R50~\cite{carion2020detr} fine-tuned on the
 respective dataset and frozen throughout. Region proposals are kept above a
 score of $0.05$, with between $3$ and $15$ instances per image. Pose comes from
-frozen RTMPose-L at $256 \times 192$, run top-down on the detected human boxes,
-so keypoints are associated with their proposals by construction. The interaction head uses a query width of
-$384$, one Swin encoder block over the C5 feature map, and a two-layer triplet
-decoder with $8$ heads and dropout $0.1$. Training uses
+frozen RTMPose-L~\cite{jiang2023rtmpose} at $256 \times 192$, run top-down on
+the detected human boxes. Because the estimator is run on each detected crop,
+keypoints and proposals are in correspondence by construction; the $K{=}17$ and
+$K{=}23$ variants consume that correspondence by index order, while the $K{=}31$
+variant re-associates pose results to proposals by box IoU. The interaction head
+uses a query width of $384$, one Swin encoder block over the C5 feature map, and
+a two-layer triplet decoder with $8$ heads and dropout $0.1$. Training uses
 AdamW~\cite{loshchilov2019adamw} with learning rate $10^{-4}$, weight decay
-$10^{-4}$, batch size $92$ over two RTX A6000 GPUs (DDP, world size $2$), for
-$30$ epochs with the learning rate dropped by $0.2\times$ at epoch $20$. The
+$10^{-4}$, over two RTX A6000 GPUs (DDP, world size $2$), for $30$ epochs with
+the learning rate dropped by $0.2\times$ at epoch $20$. The
 classification loss is a binary focal loss~\cite{lin2017focal} with
 $\alpha = 0.5$, $\gamma = 0.1$, combined multiplicatively with the detector's
-prior scores raised to $\lambda = 2.8$. The random seed is fixed at $140$. One
-V-COCO epoch takes approximately $19$ minutes in this configuration.
+prior scores raised to $\lambda = 2.8$. The random seed is fixed at $140$. The
+DetailHOI configurations of Table~\ref{tab:ablation} were trained at batch size
+$92$; the subset baseline was trained at $64$, a confound we did not control and
+return to in \S\ref{sec:limitations}. One V-COCO epoch takes approximately $19$
+minutes in this configuration.
 
 \subsection{Main comparison}
 
@@ -678,30 +698,36 @@ the final numbers.
 \includegraphics[width=\linewidth]{figures/convergence.pdf}
 \caption{Convergence on the human-clarity subset of V-COCO. All configurations
 share a schedule; the learning-rate drop at epoch $20$ is marked. Panel (b)
-magnifies the post-drop region where the configurations separate. Denser
-skeletons ($K{=}23$, $K{=}31$) sit consistently below both the baseline and
-$K{=}17$ for the whole of the second phase---the ordering is stable, not a
-single-epoch fluctuation.}
+magnifies the post-drop region where the configurations separate. The two
+$K{=}23$ curves are independent repetitions of one configuration; the band
+between them is the run-to-run spread of this protocol ($\approx 0.1$ mAP), and
+every other margin in the figure should be read against it. The baseline
+oscillates over the final ten epochs and gives back $0.38$ mAP from its peak,
+while $K{=}17$ is flat over the same window---the clearest effect here is
+stability rather than peak accuracy.}
 \label{fig:conv}
 \end{figure}
 
 \begin{table}[t]
 \centering\small
 \caption{Keypoint granularity and positional budget, V-COCO human-clarity
-subset. All rows are trained and evaluated on the same subset under the same
-schedule. The two interpolated skeletons are clearly worse; the $17$ native
-joints with an asymmetric budget are best, and are markedly more stable across
-the final ten epochs.}
+subset. Every row is trained and evaluated on the same subset under the same
+$30$-epoch schedule. ``Last-5'' averages epochs $26$--$30$; we read the
+comparison from that column, because ``Best'' is a maximum over $30$ correlated
+evaluations and is the least stable of the three summaries. The two $K{=}23$
+rows are independent repetitions of one configuration and are what calibrates
+the noise floor below.}
 \label{tab:ablation}
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{lccc}
+\setlength{\tabcolsep}{4.5pt}
+\begin{tabular}{lcccc}
 \toprule
-Configuration & $D_h/D_o$ & Best & Epoch 30 \\
+Configuration & $D_h/D_o$ & Best & Epoch 30 & Last-5 \\
 \midrule
-PViC baseline (no keypoints)      & 256/256 & 63.95 & 63.57 \\
-\textbf{$K{=}17$ COCO joints}     & \textbf{384/128} & \textbf{63.96} & \textbf{63.95} \\
-$K{=}23$ interpolated             & 256/256 & 63.63 & 63.44 \\
-$K{=}31$ interpolated             & 256/256 & 63.65 & 63.51 \\
+PViC baseline (no keypoints)      & 256/256 & 63.95 & 63.57 & 63.68 \\
+\textbf{$K{=}17$ COCO joints}     & \textbf{384/128} & \textbf{63.96} & \textbf{63.95} & \textbf{63.94} \\
+$K{=}23$ interpolated (run 1)     & 256/256 & 63.53 & 63.51 & 63.45 \\
+$K{=}23$ interpolated (run 2)     & 256/256 & 63.63 & 63.44 & 63.50 \\
+$K{=}31$ interpolated             & 256/256 & 63.65 & 63.51 & 63.60 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -709,45 +735,85 @@ $K{=}31$ interpolated             & 256/256 & 63.65 & 63.51 \\
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figures/ablation.pdf}
-\caption{Best subset mAP per configuration, relative to the baseline (dashed).
-Adding interpolated points along the skeleton graph costs roughly $0.3$ mAP.}
+\caption{Last-5 subset mAP per configuration (mean over epochs $26$--$30$),
+relative to the baseline (dashed). The shaded band is the run-to-run spread
+measured from the duplicated $K{=}23$ configuration; differences narrower than
+the band are not interpretable. Interpolating points along the skeleton graph
+does not recover the accuracy of the $17$ native joints.}
 \label{fig:ablation}
 \end{figure}
 
-\paragraph{Denser skeletons are worse.} $K{=}23$ and $K{=}31$ both land around
-$63.6$, roughly $0.3$ points below the $17$-joint model and below the baseline.
+\paragraph{How large a margin is readable.}
+\label{sec:noise}
+Before interpreting any row of Table~\ref{tab:ablation} we need to know what
+counts as a difference. The two $K{=}23$ rows answer that: they are the same
+configuration, the same data and the same schedule, run twice. They differ by
+$0.10$ on Best, $0.07$ at epoch $30$ and $0.05$ on Last-5. We therefore treat
+$\approx\!0.1$ mAP as the resolution of this protocol and decline to interpret
+anything smaller.
+
+Two consequences follow immediately, and they point in opposite directions.
+First, the headline peak comparison evaporates: $K{=}17$ beats the baseline by
+$0.01$ on Best, an order of magnitude inside the floor, so on peak accuracy the
+skeletal prior and the box centre are \emph{indistinguishable} and we do not
+claim otherwise. Second, the end-of-schedule comparison survives: $+0.26$ on
+Last-5 and $+0.38$ at epoch $30$ are three to four times the floor. The
+granularity gaps survive as well---$K{=}17$ leads both interpolated skeletons by
+$0.35$--$0.50$ on Last-5. This single duplicated pair is a bound on run-to-run
+spread, not a proper variance estimate ($n = 2$, one configuration); we return
+to that in \S\ref{sec:limitations}.
+
+\paragraph{Denser skeletons do not help.} On Last-5, $K{=}23$ reaches
+$63.45$/$63.50$ and $K{=}31$ reaches $63.60$, against $63.94$ for the $17$
+native joints---a deficit of $0.35$--$0.50$, comfortably outside the floor. Note
+what this does and does not say. Relative to the baseline's $63.68$ the
+interpolated models are behind by $0.08$--$0.23$, which for $K{=}31$ is inside
+the floor; they track below the baseline at every post-drop epoch
+(Fig.~\ref{fig:conv}b), but consecutive epochs of one run are not independent
+evidence, so the defensible claim is that interpolation \emph{fails to improve
+on either the baseline or the native joints}, not that it is reliably worse than
+the baseline.
+
 We think the reason is structural rather than a tuning artefact. An interpolated
 point is an exact convex combination of two joints that are already in the
-stack, so it carries no information the projection did not already have. What it
-does carry is cost: $W_h$ grows from $1.67$M to $2.03$M parameters, the
-sinusoidal stack is diluted by redundant rows, and the extent statistic
-$(\hat{w}, \hat{h})$ is computed over a set whose interior is now densely
-populated, making it less sensitive to the extremities that actually define
-reach. The lesson generalises beyond this architecture: when a prior is
-compressed by a single linear map, adding deterministic functions of existing
-inputs is not free.
+stack, so it carries no information the projection did not already have---$W_h$
+is a single linear map, and a linear map already spans every convex combination
+of its inputs. What interpolation does carry is cost: $W_h$ grows from $1.67$M
+to $2.03$M parameters, the sinusoidal stack is diluted by redundant rows, and
+the extent statistic $(\hat{w}, \hat{h})$ is computed over a set whose interior
+is now densely populated, making it less sensitive to the extremities that
+actually define reach. The lesson generalises beyond this architecture: when a
+prior is compressed by a single linear map, adding deterministic functions of
+existing inputs is not free.
 
-\paragraph{The budget split matters.} The $K{=}17$ model runs at $384/128$ and
-the interpolated models at $256/256$; the $17$-joint configuration is the only
-one that gives the human side more than half the positional budget, and it is
-the only one that improves on the baseline. This is consistent with the
-intuition that a $K$-joint skeleton has genuinely more spatial degrees of
-freedom than a single point and needs more room to survive compression, while
-the object's centre needs very little---$128$ dimensions of a $256$-dimensional
-sinusoidal code are apparently enough to localise a box centre. We regard the
-split as a first-class hyper-parameter of this design rather than an
-implementation detail.
+\paragraph{Density and budget were never separated.} The reading above comes
+with a caveat we want to state plainly rather than bury: $K{=}17$ was only ever
+trained at $384/128$, and $K{=}23$ and $K{=}31$ only ever at $256/256$. The two
+variables are perfectly confounded in our runs. The data are equally consistent
+with three stories---interpolation hurts, the asymmetric budget helps, or
+both---and we cannot arbitrate between them, because the two cells that would
+do so, $K{=}17$ at $256/256$ and an interpolated skeleton at $384/128$, were
+never run. What can be said is that the one configuration giving the human side
+more than half of the positional budget is also the only one that reaches the
+baseline, which is at least consistent with the intuition that a $K$-joint
+skeleton has more spatial degrees of freedom than a single point and needs more
+room to survive compression, while $128$ dimensions are apparently enough to
+localise an object centre. We regard $(D_h, D_o)$ as a first-class
+hyper-parameter of this design rather than an implementation detail, and
+crossing it against $K$ is the first experiment we would run next.
 
-\paragraph{Stability, not just peak.} The final-epoch column of
-Table~\ref{tab:ablation} is worth reading alongside the best column. The
-baseline peaks at $63.95$ but ends at $63.57$, oscillating by nearly $0.4$
-points over the last ten epochs (Fig.~\ref{fig:conv}b). DetailHOI peaks at
-$63.96$ and ends at $63.95$. On the peak metric the two are tied; on the
-end-of-schedule metric---the one that matters if you are not selecting
-checkpoints on the test set---the skeletal prior is worth $0.38$ points and
-removes most of the late-training variance. A positional query anchored to a
-stable body geometry appears to give the decoder a less noisy target than one
-anchored to a box centre that shifts with every detector jitter.
+\paragraph{Stability, not peak.} The most robust effect in the table is not in
+the Best column at all. The baseline peaks at $63.95$ and ends at $63.57$, a
+give-back of $0.38$; $K{=}17$ peaks at $63.96$ and ends at $63.95$, a give-back
+of $0.01$. Over the ten epochs after the learning-rate drop the baseline's
+standard deviation is $0.114$ against $0.083$ for $K{=}17$, and on the Last-5
+mean the gap is $+0.26$. So the two are tied where a maximum is taken over the
+test set and separated where it is not---which is the comparison that matters
+if you are not selecting checkpoints on test data. A positional query anchored
+to a stable body geometry appears to give the decoder a less noisy target than
+one anchored to a box centre that shifts with every detector jitter. We put
+more weight on this than on the peak numbers, and it is the finding we would
+ask a reader to carry away from the table.
 
 \paragraph{Filtering as a training strategy.} Training on the human-clarity
 subset and evaluating on the full benchmark (last row of Table~\ref{tab:main})
@@ -865,7 +931,7 @@ depends on it.
 \subsection{Limitations}
 \label{sec:limitations}
 
-Three caveats bound the claims above.
+Four caveats bound the claims above.
 
 \emph{The clarity filter is a proxy.} As implemented, the filter keeps an image
 if any object is detected with confidence $\geq 0.8$, not specifically a person.
@@ -876,13 +942,22 @@ expect the qualitative conclusions to hold, since the failure modes it removes
 (blur, extreme scale) are not person-specific, but the exact subset would
 differ.
 
-\emph{One seed, and one confounded baseline.} All ablations use a single seed
-($140$). The margins in Table~\ref{tab:ablation} are a few tenths of a point,
-which is the same order as the epoch-to-epoch oscillation visible in
-Figure~\ref{fig:conv}b; the ordering is stable across the final ten epochs,
-which is our evidence that it is real, but multi-seed variance is not measured.
-Separately, the subset baseline was trained at batch size $64$ against $92$ for
-the DetailHOI rows, a confound we did not control.
+\emph{Variance is bounded once, not estimated.} Every configuration is trained
+at seed $140$, and only one of them---$K{=}23$ at $256/256$---was repeated. That
+repetition is what licenses the $\approx\!0.1$ mAP floor used throughout
+\S\ref{sec:ablation}, and it is a single pair from a single configuration rather
+than a variance estimate: it could understate the spread of a configuration that
+happens to be less stable. Three seeds per row would settle this, and it is the
+cheapest experiment that would materially strengthen the paper. Separately, the
+subset baseline was trained at batch size $64$ against $92$ for the DetailHOI
+rows, so a portion of the stability difference we attribute to the prior could
+be a batch-size effect instead.
+
+\emph{Keypoint count and positional budget are confounded.} As set out in
+\S\ref{sec:ablation}, no run crosses the two variables: $K{=}17$ appears only at
+$384/128$ and the interpolated skeletons only at $256/256$. Neither the claim
+that interpolation fails to help nor the claim that the asymmetric budget helps
+can be isolated from the other on this evidence.
 
 \emph{V-COCO numbers are internal.} As noted in \S\ref{sec:setup}, they come
 from the diagnostic evaluator, not the official \texttt{AP\textsubscript{role}}
@@ -900,13 +975,19 @@ detector nor the decoder, and improves HICO-DET full mAP from $33.35$ to
 $33.74$, with the gain concentrated on non-rare classes and a marked reduction
 in late-training instability.
 
-The ablations are the more transferable part of the result. Densifying the
-skeleton by interpolating along its graph makes things \emph{worse}, because a
-single linear projection can already form those combinations; and how the fixed
-positional budget is split between the human and the object matters as much as
-what is put into the human half. Both findings apply to any design that
+The controlled ablations are the more transferable part of the result.
+Densifying the skeleton by interpolating along its graph does not help---it
+falls $0.35$--$0.50$ mAP short of the native joints---because a single linear
+projection can already form those combinations; and on the one comparison where
+we can bound run-to-run noise, the prior's contribution is to the
+\emph{end} of the schedule rather than to peak accuracy, which is a tie. How the
+fixed positional budget is split between the human and the object is plainly a
+design variable worth treating as one, though our runs cannot separate its
+effect from that of the keypoint count. These findings apply to any design that
 compresses a structured prior into a positional query. The clearest next step is
-to add a signal that is genuinely new rather than derived---head orientation
+to cross the budget split against the keypoint count and to repeat each cell
+across seeds; after that, to add a signal that is genuinely new rather than
+derived---head orientation
 being the obvious candidate---within the same budget, and to test whether it
 reaches the interactions a kinematic prior cannot see: the ones that have not
 started yet.

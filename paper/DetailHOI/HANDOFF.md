@@ -242,7 +242,7 @@ original `.docx`.
 
 | Number | Source | Status |
 |---|---|---|
-| Subset ablation: 63.95 / 63.96 / 63.63 / 63.65 | runs 5, 9, 11/12, 10 | **verified from logs** |
+| Subset ablation: 63.95 / 63.96 / 63.53 / 63.63 / 63.65 | runs 5, 9, 11, 12, 10 | **verified from logs** |
 | Convergence + ablation figures | `figures/curves.json` ← all 13 logs | **verified** |
 | Dataset / filter counts (Table 2) | computed from the annotation JSONs | **verified** |
 | Parameter counts (Table 1) | computed analytically from the layer shapes | **verified** |
@@ -397,3 +397,73 @@ paper. §5 above marks the paper's YOLOv8-n numbers **verified from logs**, and 
 mAP in §6's table was measured on that exact subset — swapping in the deck's numbers would
 have made the method description and the results tables inconsistent. Don't make that swap
 without first re-deriving which filter/counts the *current* checkpoints actually used.
+
+---
+
+## 13. Results section re-grounded against the logs (2026-09-04)
+
+`detailhoi.tex` only. The `.docx` and `.html` were **not** updated and now disagree with
+the `.tex` on §5.2 — see the warning at the end of this section.
+
+**Why.** The subset ablation was the only part of the paper backed end-to-end by
+`figures/curves.json`, but the manuscript was reporting it with a `Best` column
+(a maximum over 30 correlated evaluations) and no notion of how large a margin is
+readable. Both problems are fixed by a fact already in the record and previously unused:
+runs 11 and 12 are **the same configuration run twice** (`new_kept23_ratio1`).
+
+**The noise floor.** Runs 11 vs 12 differ by 0.10 (Best), 0.07 (epoch 30), 0.05 (Last-5).
+The paper now states ≈0.1 mAP as the resolution of the protocol and refuses to interpret
+anything smaller. Consequences, all recomputed from `curves.json`:
+
+| Comparison (subset, V-COCO) | Margin | vs 0.1 floor |
+|---|---|---|
+| K=17 vs baseline, **Best** | +0.01 | **inside** — now reported as a tie, not a win |
+| K=17 vs baseline, Last-5 | +0.26 | outside (≈3×) |
+| K=17 vs baseline, epoch 30 | +0.38 | outside (≈4×) |
+| K=17 vs interpolated, Last-5 | +0.35 … +0.50 | outside |
+| K=31 vs baseline, Last-5 | −0.08 | **inside** — no longer claimed worse than baseline |
+| baseline peak→final give-back | 0.38 | vs 0.01 for K=17 |
+| sd over epochs 21–30 | 0.114 baseline / 0.083 K=17 | — |
+
+**What changed in the manuscript.**
+- Table 4 gains a `Last-5` column (mean of epochs 26–30) and lists **both** K=23 runs.
+  Last-5 is now the column the comparison is read from.
+- New paragraph "How large a margin is readable" (`\label{sec:noise}`) ahead of the
+  interpretation paragraphs.
+- "Denser skeletons are worse" → "**do not help**". The old claim that interpolation is
+  below *the baseline* is not supportable for K=31 (−0.08, inside the floor); the claim
+  that it is below *the 17 native joints* is (−0.35…−0.50).
+- "The budget split matters" → "**Density and budget were never separated**". K=17 only
+  ever ran at 384/128 and K=23/31 only at 256/256, so the two variables are perfectly
+  confounded. The intro contribution list previously claimed "384/128 beats 256/256 under
+  an identical keypoint set" — **that experiment does not exist**; it was corrected.
+- "Stability, not peak" now quotes the give-back and sd numbers above.
+- Limitations: three caveats → four. Variance is now *bounded once* rather than
+  unmeasured; the density/budget confound is stated explicitly.
+- Abstract, contributions and conclusion aligned with all of the above.
+- §4.4 no longer says "batch size 92" globally — the subset baseline was 64 (run 5), the
+  DetailHOI rows 92. Also records that K=17/23 associate pose by index order while K=31
+  uses IoU (`keypoint_utils`), which §3 flagged as glossed.
+
+**Figures.** `mkfigs.py` rewritten: `OUT` is now derived from the script's own location
+(was hard-coded `/mnt/fast/...`, so it only ran on the original machine), the ablation dot
+plot switched from hard-coded `Best` values to `Last-5` computed from `curves.json`, and
+both K=23 runs are drawn — as a shaded band in `convergence.pdf` and as a paired dot in
+`ablation.pdf`. This also fixes a latent inconsistency: the old dot plot labelled its K=23
+series `k23_r1` but plotted `0.6363`, which is run 12's number, while the convergence plot
+used run 11. The noise floor is now computed in the script rather than asserted.
+`python3 mkfigs.py` regenerates both; it needs only matplotlib.
+
+**Every number above was re-verified against `curves.json` programmatically**, including
+the rounding: the K=17-vs-interpolated range is quoted as 0.35–0.50 (unrounded means), not
+0.34–0.49 as you get by subtracting the rounded table cells.
+
+**Deliberately not touched, at the author's instruction:** all HICO-DET numbers and the
+full-set V-COCO comparison in Table 3. Both remain as inherited from the `.docx`. Note for
+whoever picks this up — §6 still applies and the problem is worse than "unverified": all
+three full-set runs (1, 2, 4) used **`main_d`**, so the record contains *no* full-set PViC
+baseline, and Table 3's "PViC baseline 71.28" is a `main_d` run. That comparison is not a
+baseline-vs-method comparison. Fixing it needs one `main.py` full-set run (§9 item 3).
+
+**Format drift.** `detailhoi.tex` is now ahead of `DetailHOI.docx` and `detailhoi.html`.
+Bring those two forward before circulating, or treat the `.tex` as the single source.
