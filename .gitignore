@@ -33,3 +33,13 @@ vcoco/mscoco2014/
 *.tar
 *.tar.gz
 *.zip
+
+# ---- LaTeX build artifacts ----
+*.aux
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
